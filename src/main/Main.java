@@ -20,7 +20,7 @@ import java.util.concurrent.*;
  */
 public class Main {
 
-	  // === globaler Zustand ===
+    // === globaler Zustand für Live-Parsing ===
     private static volatile boolean initialized = false;
     private static final List<String> prebuffer = Collections.synchronizedList(new ArrayList<>());
     private static MissionInfo mission;
@@ -28,45 +28,28 @@ public class Main {
     private static final Map<String, List<PlayerStats>> teams = new HashMap<>();
     private static final List<GoalEvent> goals = new ArrayList<>();
 
-    // Pfad der zuletzt geschriebenen JSON-Datei (wird gespeichert zum Archivieren)
+    // === gemeinsame STATE-Map für Ballbesitz, Vorlagen, Steals etc. ===
+    private static final Map<String,Object> STATE = new HashMap<>();
+    private static final String KEY_CUR        = "__cur__";
+    private static final String KEY_TS         = "__lastTs__";
+    private static final String KEY_LAST_PASS  = "__lastPass__";
+    private static final String KEY_LAST_CLEAR = "__lastClear__";
+    private static final String KEY_LAST_STEAL = "__lastSteal__";
+    private static final String KEY_STEAL_FROM = "__lastStealFrom__";
+
+    // Pfad der aktuell geschriebenen JSON (für Archivierung)
     private static volatile String lastJsonFilePath = null;
 
-    /*
     public static void main(String[] args) throws Exception {
-        // 1-Sekunden-Scheduler zum fortlaufenden JSON-Schreiben
-        ScheduledExecutorService sched = Executors.newSingleThreadScheduledExecutor();
-        sched.scheduleAtFixedRate(() -> {
-        	System.out.println(initialized);
-            if (!initialized) return;
+        // 1) Writer-Thread, der jede Sekunde JSON schreibt (und optional pusht)
+        Thread writer = new Thread(() -> {
             try {
-                // 1) JSON erzeugen
-                JSONObject js = aggregateAndBuildJson(mission, playerMap, teams, goals);
-                // 2) in Datei schreiben (gibt den Dateinamen zurück)
-                String outFile = writeJsonToFile(js);
-                // 3) an dein Plugin pushen
-                WriteToPlugin.writeToPlugin(outFile);
-                System.out.println("→ JSON gepusht: " + outFile);
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
-        }, 1, 1, TimeUnit.SECONDS);
-
-        // TCP-Listener auf Port 7001
-        listenTcpAndProcess(7001);
-    }*/
-    
-    public static void main(String[] args) throws Exception {
-        // 1) Thread für das Live-Schreiben der JSON jede Sekunde
-        Thread writerThread = new Thread(() -> {
-            try {
-                while (!initialized) {
-                    Thread.sleep(100);
-                }
+                // warte auf INIT
+                while (!initialized) Thread.sleep(100);
                 while (true) {
                     JSONObject js = aggregateAndBuildJson(mission, playerMap, teams, goals);
-                    String outFile = writeJsonToFile(js);
-                    //WriteToPlugin.writeToPlugin(outFile);
-                    //System.out.println("→ JSON gepusht: " + outFile);
+                    String out = writeJsonToFile(js);
+                    // optional: WriteToPlugin.writeToPlugin(out);
                     Thread.sleep(1000);
                 }
             } catch (InterruptedException ie) {
@@ -75,67 +58,60 @@ public class Main {
                 e.printStackTrace();
             }
         }, "JSON-Writer");
-        writerThread.setDaemon(true);
-        writerThread.start();
+        writer.setDaemon(true);
+        writer.start();
 
-        // 2) Haupt-Thread: TCP-Listener in Dauerschleife
+        // 2) TCP-Server für Live-Daten
         listenTcpAndProcess(7001);
     }
 
-
-    
-    
-    /** Starte einen TCP-Server, der jede Zeile an handleLine() gibt */
-    public static void listenTcpAndProcess(int port) {
-        System.out.println("Starte TCP Server auf Port " + port + " und warte auf Verbindungen...");
-        try (ServerSocket serverSocket = new ServerSocket(port)) {
+    /** TCP-Server: jede empfangene Zeile an handleLine() weitergeben */
+    private static void listenTcpAndProcess(int port) {
+        System.out.println("Starte TCP Server auf Port " + port + "...");
+        try (ServerSocket ss = new ServerSocket(port)) {
             while (true) {
-                try (Socket client = serverSocket.accept()) {
-                    System.out.println("Verbindung von: " + client.getInetAddress());
-                    try (BufferedReader in = new BufferedReader(
-                            new InputStreamReader(client.getInputStream(), StandardCharsets.UTF_8))) {
-                        String line;
-                        while ((line = in.readLine()) != null) {
-                            handleLine(line.trim());
-                        }
+                try (Socket sock = ss.accept();
+                     BufferedReader in = new BufferedReader(new InputStreamReader(sock.getInputStream(), StandardCharsets.UTF_8)))
+                {
+                    System.out.println("Verbindung von " + sock.getInetAddress());
+                    String line;
+                    while ((line = in.readLine()) != null) {
+                        handleLine(line.trim());
                     }
                     System.out.println("Verbindung beendet.");
-
-                    // JSON-Datei archivieren, nachdem Verbindung beendet ist
                     archiveCurrentJsonFile();
-
                 } catch (IOException e) {
                     System.err.println("Fehler bei Verbindung: " + e.getMessage());
                 }
             }
         } catch (IOException e) {
-            System.err.println("Fehler im TCP Server: " + e.getMessage());
+            System.err.println("Server-Fehler: " + e.getMessage());
         }
     }
 
-    /** Puffer + Erst-Init bei erstem Code "9" + live-Verarbeitung */
+    /** Puffern + Init bei erstem Code "9" + ab dann Live-Parse aller "4\t" */
     private static void handleLine(String raw) {
         if (!initialized) prebuffer.add(raw);
         String[] p = raw.split("\t", -1);
 
-        // 1st trigger: Code "9" zur Initialisierung
+        // Erst-Init: Code "9"
         if (!initialized && p.length>0 && "9".equals(p[0])) {
             mission = loadMissionInfoAndSynonymsFromLines(prebuffer);
             registerPlayersFromLines(prebuffer, mission.idToSynonym, mission.teamNames, playerMap);
-            // alle gepufferten 4-Zeilen einmal nachholen
-            prebuffer.stream().filter(l->l.startsWith("4\t")).forEach(Main::processEventLine);
+            prebuffer.stream().filter(l->l.startsWith("4\t"))
+                     .forEach(Main::processEventLine);
             prebuffer.clear();
             initialized = true;
             System.out.println(">>> INITIALISIERT nach Code 9");
         }
 
-        // nach Init: jede 4-Zeile live parsen
+        // danach: jede 4-Event-Zeile live parsen
         if (initialized && raw.startsWith("4\t")) {
             processEventLine(raw);
         }
     }
 
-    // === Init-Hilfen aus prebuffer ===
+    // ─── Initialisierung aus gepufferten Zeilen ─────────────────────────────────
 
     private static MissionInfo loadMissionInfoAndSynonymsFromLines(List<String> lines) {
         MissionInfo mi = new MissionInfo();
@@ -164,12 +140,14 @@ public class Main {
     ) {
         for (String raw : lines) {
             String[] p = raw.split("\t", -1);
-            if ("3".equals(p[0]) && p.length>=7 && (p[2].startsWith("@")||p[2].startsWith("#"))
-                    && "Player".equalsIgnoreCase(p[3])) {
+            if ("3".equals(p[0]) && p.length>=7 &&
+                (p[2].startsWith("@")||p[2].startsWith("#")) &&
+                "Player".equalsIgnoreCase(p[3]))
+            {
                 String id   = p[2];
                 String name = idToSynonym.getOrDefault(id, p[4]);
                 String team = teamNames.getOrDefault(p[5], "Unbekannt");
-                PlayerStats ps = outMap.computeIfAbsent(id, k->{
+                PlayerStats ps = outMap.computeIfAbsent(id, k -> {
                     PlayerStats x = new PlayerStats();
                     x.id = id; x.name = name; x.team = team;
                     return x;
@@ -179,260 +157,235 @@ public class Main {
         }
     }
 
-    // === DER BISHERIGE EVENT-PARSER jetzt in einer Methode ===
+    // ─── Live-Parser für jede Event-Zeile ────────────────────────────────────────
 
     private static void processEventLine(String raw) {
         String[] p = raw.split("\t", -1);
         String code = p[2];
         long timestamp = Long.parseLong(p[1]);
-        // statische Variablen für Ballbesitz
-        // wir packen sie als ThreadLocal hier, für Kürze als Felder:
-        // (in echt würde man das auslagern)
-        // siehe unten für Erklärung
-        // ---------------------------------------------
-        // lokaler State in einer Map:
-        String KEY_CUR = "__cur__";      // current owner
-        String KEY_TS  = "__lastTs__";   // last timestamp
-        ThreadLocal<Map<String,Object>> S = ThreadLocal.withInitial(HashMap::new);
-        Map<String,Object> M = S.get();
-        // ---------------------------------------------
-        Long lastTs = (Long)M.getOrDefault(KEY_TS, -1L);
-        String currentOwner = (String)M.get(KEY_CUR);
+
+        Long lastTs = (Long)STATE.getOrDefault(KEY_TS, -1L);
+        String currentOwner = (String)STATE.get(KEY_CUR);
+
         System.out.println(raw);
-        // Ballbesitz-Codes
+
+        // — Ballbesitz und Pass/Steal/Clear —
         if (Set.of("1100","1103","1107","1109").contains(code)) {
             String next = null;
             switch (code) {
                 case "1100": // Pass
                     if (p.length>=6) {
                         String giver = p[3], recv = p[5];
-                        playerMap.getOrDefault(recv, new PlayerStats()).passes++;
-                        M.put("lastPass", giver);
-                        M.remove("lastClear"); M.remove("lastSteal"); M.remove("lastStealFrom");
+                        Optional.ofNullable(playerMap.get(recv)).ifPresent(ps->ps.passes++);
+                        STATE.put(KEY_LAST_PASS, giver);
+                        STATE.remove(KEY_LAST_CLEAR);
+                        STATE.remove(KEY_LAST_STEAL);
+                        STATE.remove(KEY_STEAL_FROM);
                         next = recv;
                     }
                     break;
                 case "1103": // Steal
                     if (p.length>=6) {
                         String st = p[3], stFrom = p[5];
-                        playerMap.getOrDefault(st, new PlayerStats()).steals++;
-                        M.put("lastSteal", st); M.put("lastStealFrom", stFrom);
-                        M.remove("lastPass"); M.remove("lastClear");
+                        Optional.ofNullable(playerMap.get(st)).ifPresent(ps->ps.steals++);
+                        STATE.put(KEY_LAST_STEAL, st);
+                        STATE.put(KEY_STEAL_FROM, stFrom);
+                        STATE.remove(KEY_LAST_PASS);
+                        STATE.remove(KEY_LAST_CLEAR);
                         next = st;
                     }
                     break;
                 case "1107": // Ball erhalten
                     next = p[3];
-                    M.remove("lastPass"); M.remove("lastClear"); M.remove("lastSteal"); M.remove("lastStealFrom");
+                    STATE.remove(KEY_LAST_PASS);
+                    STATE.remove(KEY_LAST_CLEAR);
+                    STATE.remove(KEY_LAST_STEAL);
+                    STATE.remove(KEY_STEAL_FROM);
                     break;
                 case "1109": // Clear
                     if (p.length>=6) {
                         String clr = p[3], recv = p[5];
-                        playerMap.getOrDefault(clr, new PlayerStats()).klaerungen++;
-                        M.put("lastClear", clr);
-                        M.remove("lastPass"); M.remove("lastSteal"); M.remove("lastStealFrom");
+                        Optional.ofNullable(playerMap.get(clr)).ifPresent(ps->ps.klaerungen++);
+                        STATE.put(KEY_LAST_CLEAR, clr);
+                        STATE.remove(KEY_LAST_PASS);
+                        STATE.remove(KEY_LAST_STEAL);
+                        STATE.remove(KEY_STEAL_FROM);
                         next = recv;
                     }
                     break;
             }
-            // beende alten Besitz
+            // alten Besitz abschließen
             if (currentOwner!=null && lastTs>0) {
-                PlayerStats old = playerMap.get(currentOwner);
-                old.ballbesitzMillis += (timestamp - ((Long)M.get(KEY_TS)));
+                Optional.ofNullable(playerMap.get(currentOwner))
+                        .ifPresent(ps-> ps.ballbesitzMillis += (timestamp - lastTs));
             }
-            // start neuer Besitz
-            if (next != null) {
+            // neuen Besitz starten
+            if (next!=null) {
                 PlayerStats neu = playerMap.get(next);
-                if (neu != null) {
+                if (neu!=null) {
                     neu.lastBallStart = timestamp;
-                    M.put(KEY_CUR, next);
+                    STATE.put(KEY_CUR, next);
                 } else {
-                    System.err.println("Warnung: Spieler mit ID " + next + " nicht gefunden für Ballbesitz-Event.");
+                    System.err.println("Warnung: Spieler "+next+" nicht gefunden für Ballbesitz-Event.");
                 }
             }
-
-            M.put(KEY_TS, timestamp);
+            STATE.put(KEY_TS, timestamp);
         }
 
-        // Tor (1101)
+        // — Tor (1101) mit Vorlagen-Logik —
         if ("1101".equals(code) && p.length>=4) {
             String scorer = p[3];
             PlayerStats sc = playerMap.get(scorer);
-            sc.goals++;
-            int sec = (int)((timestamp - ((Long)prebuffer.stream()
-                    .filter(l->l.startsWith("4\t"))
-                    .findFirst().map(l->Long.parseLong(l.split("\t",2)[1]))
-                    .orElse(timestamp))) / 1000);
-            sc.toreZeiten.add(sec);
+            if (sc!=null) {
+                sc.goals++;
+                int sec = (int)((timestamp - (lastTs>0? lastTs : timestamp))/1000);
+                sc.toreZeiten.add(sec);
 
-            GoalEvent ge = new GoalEvent();
-            ge.zeit = sec;
-            ge.spielerId = scorer;
-            ge.spielerName = sc.name;
-            ge.team = sc.team;
+                GoalEvent ge = new GoalEvent();
+                ge.zeit = sec;
+                ge.spielerId   = scorer;
+                ge.spielerName = sc.name;
+                ge.team         = sc.team;
 
-            if (M.containsKey("lastPass")) {
-                String lp = (String)M.get("lastPass");
-                ge.vorlagenSpielerId = lp;
-                ge.vorlagenSpielerName = playerMap.get(lp).name;
-                playerMap.get(lp).vorlagen++;
-            } else if (M.containsKey("lastClear")) {
-                String lc = (String)M.get("lastClear");
-                ge.vorlagenSpielerId = lc;
-                ge.vorlagenSpielerName = playerMap.get(lc).name;
-                playerMap.get(lc).vorlagen++;
-            } else if (M.containsKey("lastSteal")) {
-                ge.stealFromSpielerId   = (String)M.get("lastStealFrom");
-                ge.stealFromSpielerName = playerMap.get(ge.stealFromSpielerId).name;
+                if (STATE.containsKey(KEY_LAST_PASS)) {
+                    String lp = (String)STATE.get(KEY_LAST_PASS);
+                    ge.vorlagenSpielerId   = lp;
+                    ge.vorlagenSpielerName = playerMap.get(lp).name;
+                    playerMap.get(lp).vorlagen++;
+                } else if (STATE.containsKey(KEY_LAST_CLEAR)) {
+                    String lc = (String)STATE.get(KEY_LAST_CLEAR);
+                    ge.vorlagenSpielerId   = lc;
+                    ge.vorlagenSpielerName = playerMap.get(lc).name;
+                    playerMap.get(lc).vorlagen++;
+                } else if (STATE.containsKey(KEY_LAST_STEAL)) {
+                    ge.stealFromSpielerId   = (String)STATE.get(KEY_STEAL_FROM);
+                    ge.stealFromSpielerName = playerMap.get(ge.stealFromSpielerId).name;
+                }
+                goals.add(ge);
             }
-            goals.add(ge);
 
-            // beende Besitz
-            if (M.get(KEY_CUR)!=null) {
-                PlayerStats old = playerMap.get(M.get(KEY_CUR));
-                old.ballbesitzMillis += timestamp - ((Long)M.get(KEY_TS));
+            // Besitz beenden
+            String owner = (String)STATE.get(KEY_CUR);
+            if (owner!=null) {
+                Optional.ofNullable(playerMap.get(owner))
+                        .ifPresent(ps-> ps.ballbesitzMillis += (timestamp - lastTs));
             }
-            M.remove(KEY_CUR); M.put(KEY_TS, timestamp);
-            M.remove("lastPass"); M.remove("lastClear"); M.remove("lastSteal"); M.remove("lastStealFrom");
+
+            // alle Vorlagen-/Steal-Zustände zurücksetzen
+            STATE.remove(KEY_CUR);
+            STATE.put(KEY_TS, timestamp);
+            STATE.remove(KEY_LAST_PASS);
+            STATE.remove(KEY_LAST_CLEAR);
+            STATE.remove(KEY_LAST_STEAL);
+            STATE.remove(KEY_STEAL_FROM);
         }
 
-        // Miss (0201)
-        if ("0201".equals(code) && p.length >= 4) {
-            PlayerStats ps = playerMap.get(p[3]);
-            if (ps != null) {
-                ps.misses++;
-            } else {
-                System.err.println("Warnung: Spieler mit ID " + p[3] + " nicht gefunden für Misses-Event.");
+        // — Miss (0201) —
+        if ("0201".equals(code) && p.length>=4) {
+            playerMap.getOrDefault(p[3], new PlayerStats()).misses++;
+        }
+
+        // — Block (1104) —
+        if ("1104".equals(code) && p.length>=6) {
+            PlayerStats b = playerMap.get(p[3]);
+            PlayerStats t = playerMap.get(p[5]);
+            if (b!=null && t!=null) {
+                b.blocks++;
+                t.wurdeGeblockt++;
             }
         }
 
-        // Block (1104)
-        if ("1104".equals(code) && p.length >= 6) {
-            PlayerStats blocker = playerMap.get(p[3]);
-            PlayerStats geblockt = playerMap.get(p[5]);
-            if (blocker != null && geblockt != null) {
-                blocker.blocks++;
-                geblockt.wurdeGeblockt++;
-            } else {
-                System.err.println("Warnung: Spieler für Block-Event nicht gefunden: " + p[3] + " oder " + p[5]);
-            }
-        }
-
-        // Spielende (0101)
+        // — Spielende (0101) —
         if ("0101".equals(code)) {
-            if (M.get(KEY_CUR)!=null) {
-                PlayerStats old = playerMap.get(M.get(KEY_CUR));
-                old.ballbesitzMillis += timestamp - ((Long)M.get(KEY_TS));
+            String owner = (String)STATE.get(KEY_CUR);
+            if (owner!=null) {
+                Optional.ofNullable(playerMap.get(owner))
+                        .ifPresent(ps-> ps.ballbesitzMillis += (timestamp - lastTs));
             }
-            M.remove(KEY_CUR); M.put(KEY_TS, timestamp);
-            M.remove("lastPass"); M.remove("lastClear"); M.remove("lastSteal"); M.remove("lastStealFrom");
+            STATE.remove(KEY_CUR);
+            STATE.put(KEY_TS, timestamp);
+            STATE.remove(KEY_LAST_PASS);
+            STATE.remove(KEY_LAST_CLEAR);
+            STATE.remove(KEY_LAST_STEAL);
+            STATE.remove(KEY_STEAL_FROM);
         }
     }
 
-    // === JSON-Aggregate & Schreiben ===
+    // ─── JSON-Aggregation und Schreiben ────────────────────────────────────────
 
     private static JSONObject aggregateAndBuildJson(
             MissionInfo mi,
-            Map<String,PlayerStats> playerMap,
-            Map<String,List<PlayerStats>> teams,
-            List<GoalEvent> goals
+            Map<String,PlayerStats> pm,
+            Map<String,List<PlayerStats>> tm,
+            List<GoalEvent> gl
     ) {
         JSONObject out = new JSONObject();
-        //out.put("spielId", mi.missionId + "_" + mi.startZeit); // zum speochern für mehr
         out.put("spielId", "Spieldaten");
         out.put("missionId", mi.missionId);
         out.put("missionName", mi.missionName);
         out.put("startZeit", mi.startZeit);
         out.put("duration", mi.duration);
 
-        JSONObject allTeams = new JSONObject();
-        teams.forEach((teamName, list) -> {
-            JSONObject to = new JSONObject();
-            JSONArray pa = new JSONArray();
-            int bp = 0, t = 0, v = 0, bl = 0, gb = 0, mi2 = 0, kl = 0, ps = 0, st = 0;
-            for (PlayerStats psr : list) {
-                pa.put(psr.toJSON());
-                bp += psr.ballbesitzMillis / 1000;
-                t += psr.goals;
-                v += psr.vorlagen;
-                bl += psr.blocks;
-                gb += psr.wurdeGeblockt;
-                mi2 += psr.misses;
-                kl += psr.klaerungen;
-                ps += psr.passes;
-                st += psr.steals;
+        JSONObject all = new JSONObject();
+        tm.forEach((team, list) -> {
+            JSONObject o = new JSONObject();
+            JSONArray arr = new JSONArray();
+            int bp=0,t=0,v=0,bl=0,gb=0,mi2=0,kl=0,ps=0,st=0;
+            for (PlayerStats p : list) {
+                arr.put(p.toJSON());
+                bp += p.ballbesitzMillis/1000;
+                t  += p.goals;      v += p.vorlagen;
+                bl += p.blocks;     gb+= p.wurdeGeblockt;
+                mi2+= p.misses;     kl+= p.klaerungen;
+                ps += p.passes;     st+= p.steals;
             }
-            to.put("spieler", pa);
-            to.put("gesamtBallbesitz", bp);
-            to.put("tore", t);
-            to.put("vorlagen", v);
-            to.put("blocks", bl);
-            to.put("wurdeGeblockt", gb);
-            to.put("misses", mi2);
-            to.put("klaerungen", kl);
-            to.put("passe", ps);
-            to.put("steals", st);
-            allTeams.put(teamName, to);
+            o.put("spieler", arr);
+            o.put("gesamtBallbesitz", bp);
+            o.put("tore", t);
+            o.put("vorlagen", v);
+            o.put("blocks", bl);
+            o.put("wurdeGeblockt", gb);
+            o.put("misses", mi2);
+            o.put("klaerungen", kl);
+            o.put("passe", ps);
+            o.put("steals", st);
+            all.put(team, o);
         });
-        out.put("teams", allTeams);
+        out.put("teams", all);
 
         JSONArray ga = new JSONArray();
-        goals.forEach(g -> ga.put(g.toJSON()));
+        gl.forEach(g -> ga.put(g.toJSON()));
         out.put("tore", ga);
-
         return out;
     }
 
     private static String writeJsonToFile(JSONObject result) throws IOException {
-        String dirPath = "C:\\OBSStream";
-        File dir = new File(dirPath);
-        if (!dir.exists()) {
-            dir.mkdirs();
-        }
-
-        File f = new File(dir, "Spieldaten.json");
+        String dir = "C:\\OBSStream";
+        File d = new File(dir);
+        if (!d.exists()) d.mkdirs();
+        File f = new File(d, "Spieldaten.json");
         try (Writer w = new OutputStreamWriter(new FileOutputStream(f), StandardCharsets.UTF_8)) {
             w.write(result.toString(2));
         }
-        System.out.println("→ JSON geschrieben nach: " + f.getAbsolutePath());
-
-        // Pfad speichern, damit archiviert werden kann
         lastJsonFilePath = f.getAbsolutePath();
-
+        System.out.println("→ JSON geschrieben nach: " + lastJsonFilePath);
         return lastJsonFilePath;
     }
-    
+
     private static void archiveCurrentJsonFile() {
-        if (lastJsonFilePath == null) {
-            System.out.println("Keine JSON-Datei zum Archivieren gefunden.");
-            return;
-        }
-
-        File source = new File(lastJsonFilePath);
-        if (!source.exists()) {
-            System.out.println("JSON-Datei existiert nicht mehr: " + lastJsonFilePath);
-            return;
-        }
-
-        String archiveDir = "C:\\OBSStream\\archive";
-        File archiveFolder = new File(archiveDir);
-        if (!archiveFolder.exists()) {
-            archiveFolder.mkdirs();
-        }
-
-        String timestamp = new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date());
-        File dest = new File(archiveFolder, "Spieldaten_" + timestamp + ".json");
-
-        try {
-            Files.copy(source.toPath(), dest.toPath());
-            System.out.println("JSON-Datei archiviert: " + dest.getAbsolutePath());
-        } catch (IOException e) {
-            System.err.println("Fehler beim Archivieren der JSON-Datei: " + e.getMessage());
-        }
+        if (lastJsonFilePath == null) return;
+        File src = new File(lastJsonFilePath);
+        if (!src.exists()) return;
+        File arch = new File("C:\\OBSStream\\archive");
+        if (!arch.exists()) arch.mkdirs();
+        String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date());
+        File dst = new File(arch, "Spieldaten_" + stamp + ".json");
+        try { Files.copy(src.toPath(), dst.toPath()); }
+        catch(IOException e){ e.printStackTrace(); }
     }
 
+    // ─── Helferklasse ─────────────────────────────────────────────────────────
 
-    // === Hilfsklasse ===
     private static class MissionInfo {
         boolean foundMission = false;
         String missionId, missionName, startZeit, duration;
