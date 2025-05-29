@@ -28,7 +28,7 @@ public class Main {
     private static final Map<String, List<PlayerStats>> teams = new HashMap<>();
     private static final List<GoalEvent> goals = new ArrayList<>();
 
-    // === gemeinsame STATE-Map für Ballbesitz, Vorlagen, Steals etc. ===
+    // === STATE-Map für Ballbesitz & Co. ===
     private static final Map<String,Object> STATE = new HashMap<>();
     private static final String KEY_CUR        = "__cur__";
     private static final String KEY_TS         = "__lastTs__";
@@ -37,19 +37,21 @@ public class Main {
     private static final String KEY_LAST_STEAL = "__lastSteal__";
     private static final String KEY_STEAL_FROM = "__lastStealFrom__";
 
-    // Pfad der aktuell geschriebenen JSON (für Archivierung)
+    // Aktueller Ballhalter
+    private static volatile String currentBallHolder = null;
+
+    // Pfad der aktuell geschriebenen JSON-Datei (für Archivierung)
     private static volatile String lastJsonFilePath = null;
+    private static volatile boolean archived = false;
 
     public static void main(String[] args) throws Exception {
-        // 1) Writer-Thread, der jede Sekunde JSON schreibt (und optional pusht)
+        // 1) Writer-Thread, der jede Sekunde JSON schreibt
         Thread writer = new Thread(() -> {
             try {
-                // warte auf INIT
                 while (!initialized) Thread.sleep(100);
                 while (true) {
                     JSONObject js = aggregateAndBuildJson(mission, playerMap, teams, goals);
-                    String out = writeJsonToFile(js);
-                    // optional: WriteToPlugin.writeToPlugin(out);
+                    writeJsonToFile(js);
                     Thread.sleep(1000);
                 }
             } catch (InterruptedException ie) {
@@ -70,6 +72,7 @@ public class Main {
         System.out.println("Starte TCP Server auf Port " + port + "...");
         try (ServerSocket ss = new ServerSocket(port)) {
             while (true) {
+                archived = false;
                 try (Socket sock = ss.accept();
                      BufferedReader in = new BufferedReader(new InputStreamReader(sock.getInputStream(), StandardCharsets.UTF_8)))
                 {
@@ -89,13 +92,13 @@ public class Main {
         }
     }
 
-    /** Puffern + Init bei erstem Code "9" + ab dann Live-Parse aller "4\t" */
+    /** Puffer + Init bei erstem Code "9" + danach Live-Parse aller "4\t" */
     private static void handleLine(String raw) {
         if (!initialized) prebuffer.add(raw);
         String[] p = raw.split("\t", -1);
 
         // Erst-Init: Code "9"
-        if (!initialized && p.length>0 && "9".equals(p[0])) {
+        if (!initialized && p.length > 0 && "9".equals(p[0])) {
             mission = loadMissionInfoAndSynonymsFromLines(prebuffer);
             registerPlayersFromLines(prebuffer, mission.idToSynonym, mission.teamNames, playerMap);
             prebuffer.stream().filter(l->l.startsWith("4\t"))
@@ -169,7 +172,7 @@ public class Main {
 
         System.out.println(raw);
 
-        // — Ballbesitz und Pass/Steal/Clear —
+        // — Ballbesitz + Pass/Steal/Clear —
         if (Set.of("1100","1103","1107","1109").contains(code)) {
             String next = null;
             switch (code) {
@@ -225,8 +228,7 @@ public class Main {
                 if (neu!=null) {
                     neu.lastBallStart = timestamp;
                     STATE.put(KEY_CUR, next);
-                } else {
-                    System.err.println("Warnung: Spieler "+next+" nicht gefunden für Ballbesitz-Event.");
+                    currentBallHolder = next;           // ← hier setzen
                 }
             }
             STATE.put(KEY_TS, timestamp);
@@ -271,13 +273,14 @@ public class Main {
                         .ifPresent(ps-> ps.ballbesitzMillis += (timestamp - lastTs));
             }
 
-            // alle Vorlagen-/Steal-Zustände zurücksetzen
+            // Reset
             STATE.remove(KEY_CUR);
             STATE.put(KEY_TS, timestamp);
             STATE.remove(KEY_LAST_PASS);
             STATE.remove(KEY_LAST_CLEAR);
             STATE.remove(KEY_LAST_STEAL);
             STATE.remove(KEY_STEAL_FROM);
+            currentBallHolder = null;  // Ball nach Tor frei
         }
 
         // — Miss (0201) —
@@ -308,6 +311,7 @@ public class Main {
             STATE.remove(KEY_LAST_CLEAR);
             STATE.remove(KEY_LAST_STEAL);
             STATE.remove(KEY_STEAL_FROM);
+            currentBallHolder = null;  // Ende → kein Ballhalter
         }
     }
 
@@ -356,6 +360,12 @@ public class Main {
         JSONArray ga = new JSONArray();
         gl.forEach(g -> ga.put(g.toJSON()));
         out.put("tore", ga);
+
+        // **Neu**: Aktueller Ballhalter
+        out.put("aktuellerBallhalter",
+            currentBallHolder != null ? currentBallHolder : JSONObject.NULL
+        );
+
         return out;
     }
 
@@ -373,15 +383,21 @@ public class Main {
     }
 
     private static void archiveCurrentJsonFile() {
+        if (archived) return;
         if (lastJsonFilePath == null) return;
         File src = new File(lastJsonFilePath);
         if (!src.exists()) return;
-        File arch = new File("C:\\OBSStream\\archive");
-        if (!arch.exists()) arch.mkdirs();
+        File archDir = new File("C:\\OBSStream\\archive");
+        if (!archDir.exists()) archDir.mkdirs();
         String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date());
-        File dst = new File(arch, "Spieldaten_" + stamp + ".json");
-        try { Files.copy(src.toPath(), dst.toPath()); }
-        catch(IOException e){ e.printStackTrace(); }
+        File dst = new File(archDir, "Spieldaten_" + stamp + ".json");
+        try {
+            Files.copy(src.toPath(), dst.toPath());
+            System.out.println("JSON-Datei archiviert: " + dst.getAbsolutePath());
+            archived = true;
+        } catch (IOException e) {
+            System.err.println("Fehler beim Archivieren: " + e.getMessage());
+        }
     }
 
     // ─── Helferklasse ─────────────────────────────────────────────────────────
