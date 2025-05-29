@@ -83,6 +83,13 @@ public class Main {
                     }
                     System.out.println("Verbindung beendet.");
                     archiveCurrentJsonFile();
+                    initialized = false;
+                    playerMap.clear();
+                    teams.clear();
+                    goals.clear();
+                    prebuffer.clear();
+                    STATE.clear();
+                    currentBallHolder = null;
                 } catch (IOException e) {
                     System.err.println("Fehler bei Verbindung: " + e.getMessage());
                 }
@@ -113,8 +120,6 @@ public class Main {
             processEventLine(raw);
         }
     }
-
-    // ─── Initialisierung aus gepufferten Zeilen ─────────────────────────────────
 
     private static MissionInfo loadMissionInfoAndSynonymsFromLines(List<String> lines) {
         MissionInfo mi = new MissionInfo();
@@ -159,8 +164,6 @@ public class Main {
             }
         }
     }
-
-    // ─── Live-Parser für jede Event-Zeile ────────────────────────────────────────
 
     private static void processEventLine(String raw) {
         String[] p = raw.split("\t", -1);
@@ -228,7 +231,7 @@ public class Main {
                 if (neu!=null) {
                     neu.lastBallStart = timestamp;
                     STATE.put(KEY_CUR, next);
-                    currentBallHolder = next;           // ← hier setzen
+                    currentBallHolder = next; // aktualisiere Ballhalter
                 }
             }
             STATE.put(KEY_TS, timestamp);
@@ -241,7 +244,7 @@ public class Main {
             if (sc!=null) {
                 sc.goals++;
                 int sec = (int)((timestamp - (lastTs>0? lastTs : timestamp))/1000);
-                sc.toreZeiten.add(sec);
+                sc.toreZeiten.add((int) timestamp/1000);
 
                 GoalEvent ge = new GoalEvent();
                 ge.zeit = sec;
@@ -273,14 +276,14 @@ public class Main {
                         .ifPresent(ps-> ps.ballbesitzMillis += (timestamp - lastTs));
             }
 
-            // Reset
+            // alle Vorlagen-/Steal-Zustände zurücksetzen
             STATE.remove(KEY_CUR);
             STATE.put(KEY_TS, timestamp);
             STATE.remove(KEY_LAST_PASS);
             STATE.remove(KEY_LAST_CLEAR);
             STATE.remove(KEY_LAST_STEAL);
             STATE.remove(KEY_STEAL_FROM);
-            currentBallHolder = null;  // Ball nach Tor frei
+            currentBallHolder = null; // Ball nach Tor frei
         }
 
         // — Miss (0201) —
@@ -311,11 +314,19 @@ public class Main {
             STATE.remove(KEY_LAST_CLEAR);
             STATE.remove(KEY_LAST_STEAL);
             STATE.remove(KEY_STEAL_FROM);
-            currentBallHolder = null;  // Ende → kein Ballhalter
+            currentBallHolder = null; // Ende → kein Ballhalter
+        }
+
+        // Optional: Direkt nach wichtigen Events JSON aktualisieren
+        if (code.equals("1101") || Set.of("1100","1103","1107","1109").contains(code) || code.equals("0101")) {
+            try {
+                JSONObject js = aggregateAndBuildJson(mission, playerMap, teams, goals);
+                writeJsonToFile(js);
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
         }
     }
-
-    // ─── JSON-Aggregation und Schreiben ────────────────────────────────────────
 
     private static JSONObject aggregateAndBuildJson(
             MissionInfo mi,
@@ -361,10 +372,12 @@ public class Main {
         gl.forEach(g -> ga.put(g.toJSON()));
         out.put("tore", ga);
 
-        // **Neu**: Aktueller Ballhalter
-        out.put("aktuellerBallhalter",
-            currentBallHolder != null ? currentBallHolder : JSONObject.NULL
-        );
+        // Neu: aktuellen Ballhalter mit Namen einfügen
+        if (currentBallHolder != null && playerMap.containsKey(currentBallHolder)) {
+            out.put("aktuellerBallhalter", playerMap.get(currentBallHolder).name);
+        } else {
+            out.put("aktuellerBallhalter", JSONObject.NULL);
+        }
 
         return out;
     }
@@ -400,12 +413,12 @@ public class Main {
         }
     }
 
-    // ─── Helferklasse ─────────────────────────────────────────────────────────
-
+    // Hilfsklasse
     private static class MissionInfo {
         boolean foundMission = false;
         String missionId, missionName, startZeit, duration;
         Map<String,String> idToSynonym = new HashMap<>();
         Map<String,String> teamNames  = Map.of("0","Earth","1","Crystal","2","Fire","3","Ice");
     }
+
 }
