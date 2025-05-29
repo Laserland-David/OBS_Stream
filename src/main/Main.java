@@ -7,6 +7,8 @@ import java.io.*;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.concurrent.*;
 
@@ -18,13 +20,16 @@ import java.util.concurrent.*;
  */
 public class Main {
 
-    // === globaler Zustand ===
+	  // === globaler Zustand ===
     private static volatile boolean initialized = false;
     private static final List<String> prebuffer = Collections.synchronizedList(new ArrayList<>());
     private static MissionInfo mission;
     private static final Map<String, PlayerStats> playerMap = new HashMap<>();
     private static final Map<String, List<PlayerStats>> teams = new HashMap<>();
-    private static final List<GoalEvent> goals = new ArrayList<>(); 
+    private static final List<GoalEvent> goals = new ArrayList<>();
+
+    // Pfad der zuletzt geschriebenen JSON-Datei (wird gespeichert zum Archivieren)
+    private static volatile String lastJsonFilePath = null;
 
     /*
     public static void main(String[] args) throws Exception {
@@ -54,20 +59,17 @@ public class Main {
         // 1) Thread für das Live-Schreiben der JSON jede Sekunde
         Thread writerThread = new Thread(() -> {
             try {
-                // Warte, bis initialisiert
                 while (!initialized) {
                     Thread.sleep(100);
                 }
-                // Schreib-Schleife
                 while (true) {
                     JSONObject js = aggregateAndBuildJson(mission, playerMap, teams, goals);
                     String outFile = writeJsonToFile(js);
-           //         WriteToPlugin.writeToPlugin(outFile);
-           //         System.out.println("→ JSON gepusht: " + outFile);
+                    //WriteToPlugin.writeToPlugin(outFile);
+                    //System.out.println("→ JSON gepusht: " + outFile);
                     Thread.sleep(1000);
                 }
             } catch (InterruptedException ie) {
-                // Thread unterbrochen: sauber beenden
                 Thread.currentThread().interrupt();
             } catch (Exception e) {
                 e.printStackTrace();
@@ -76,24 +78,36 @@ public class Main {
         writerThread.setDaemon(true);
         writerThread.start();
 
-        // 2) Haupt-Thread: TCP-Listener
+        // 2) Haupt-Thread: TCP-Listener in Dauerschleife
         listenTcpAndProcess(7001);
     }
 
 
+    
+    
     /** Starte einen TCP-Server, der jede Zeile an handleLine() gibt */
     public static void listenTcpAndProcess(int port) {
         System.out.println("Starte TCP Server auf Port " + port + " und warte auf Verbindungen...");
         try (ServerSocket serverSocket = new ServerSocket(port)) {
-            Socket client = serverSocket.accept();
-            System.out.println("Verbindung von: " + client.getInetAddress());
-            try (BufferedReader in = new BufferedReader(new InputStreamReader(client.getInputStream(), StandardCharsets.UTF_8))) {
-                String line;
-                while ((line = in.readLine()) != null) {
-                    handleLine(line.trim());
+            while (true) {
+                try (Socket client = serverSocket.accept()) {
+                    System.out.println("Verbindung von: " + client.getInetAddress());
+                    try (BufferedReader in = new BufferedReader(
+                            new InputStreamReader(client.getInputStream(), StandardCharsets.UTF_8))) {
+                        String line;
+                        while ((line = in.readLine()) != null) {
+                            handleLine(line.trim());
+                        }
+                    }
+                    System.out.println("Verbindung beendet.");
+
+                    // JSON-Datei archivieren, nachdem Verbindung beendet ist
+                    archiveCurrentJsonFile();
+
+                } catch (IOException e) {
+                    System.err.println("Fehler bei Verbindung: " + e.getMessage());
                 }
             }
-            System.out.println("Verbindung beendet.");
         } catch (IOException e) {
             System.err.println("Fehler im TCP Server: " + e.getMessage());
         }
@@ -370,20 +384,51 @@ public class Main {
     }
 
     private static String writeJsonToFile(JSONObject result) throws IOException {
-        // Ziel-Ordner unter Windows
         String dirPath = "C:\\OBSStream";
         File dir = new File(dirPath);
         if (!dir.exists()) {
-            dir.mkdirs(); // falls noch nicht vorhanden, anlegen
+            dir.mkdirs();
         }
 
-        // Dateiname im Zielordner
         File f = new File(dir, "Spieldaten.json");
         try (Writer w = new OutputStreamWriter(new FileOutputStream(f), StandardCharsets.UTF_8)) {
             w.write(result.toString(2));
         }
         System.out.println("→ JSON geschrieben nach: " + f.getAbsolutePath());
-        return f.getAbsolutePath();
+
+        // Pfad speichern, damit archiviert werden kann
+        lastJsonFilePath = f.getAbsolutePath();
+
+        return lastJsonFilePath;
+    }
+    
+    private static void archiveCurrentJsonFile() {
+        if (lastJsonFilePath == null) {
+            System.out.println("Keine JSON-Datei zum Archivieren gefunden.");
+            return;
+        }
+
+        File source = new File(lastJsonFilePath);
+        if (!source.exists()) {
+            System.out.println("JSON-Datei existiert nicht mehr: " + lastJsonFilePath);
+            return;
+        }
+
+        String archiveDir = "C:\\OBSStream\\archive";
+        File archiveFolder = new File(archiveDir);
+        if (!archiveFolder.exists()) {
+            archiveFolder.mkdirs();
+        }
+
+        String timestamp = new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date());
+        File dest = new File(archiveFolder, "Spieldaten_" + timestamp + ".json");
+
+        try {
+            Files.copy(source.toPath(), dest.toPath());
+            System.out.println("JSON-Datei archiviert: " + dest.getAbsolutePath());
+        } catch (IOException e) {
+            System.err.println("Fehler beim Archivieren der JSON-Datei: " + e.getMessage());
+        }
     }
 
 
