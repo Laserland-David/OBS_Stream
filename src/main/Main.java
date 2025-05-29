@@ -19,7 +19,7 @@ import java.util.concurrent.*;
 public class Main {
 
     // === globaler Zustand ===
-    private static volatile boolean initialized = false; //Tests
+    private static volatile boolean initialized = false;
     private static final List<String> prebuffer = Collections.synchronizedList(new ArrayList<>());
     private static MissionInfo mission;
     private static final Map<String, PlayerStats> playerMap = new HashMap<>();
