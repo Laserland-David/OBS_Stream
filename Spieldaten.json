@@ -1,0 +1,64 @@
+{
+  "startZeit": "20250528191457",
+  "duration": "450000",
+  "missionId": "28",
+  "teams": {
+    "Earth": {
+      "spieler": [{
+        "spielerName": "Rex",
+        "vorlagen": 0,
+        "blocks": 0,
+        "team": "Earth",
+        "steals": 0,
+        "passe": 0,
+        "toreZeiten": [],
+        "klaerungen": 0,
+        "spielerId": "@1015",
+        "wurdeGeblockt": 0,
+        "ballbesitz": 0,
+        "misses": 0,
+        "tore": 0,
+        "klaerungenZeiten": []
+      }],
+      "wurdeGeblockt": 0,
+      "vorlagen": 0,
+      "blocks": 0,
+      "misses": 0,
+      "gesamtBallbesitz": 0,
+      "tore": 0,
+      "steals": 0,
+      "passe": 0,
+      "klaerungen": 0
+    },
+    "Crystal": {
+      "spieler": [{
+        "spielerName": "Fathom",
+        "vorlagen": 0,
+        "blocks": 0,
+        "team": "Crystal",
+        "steals": 0,
+        "passe": 0,
+        "toreZeiten": [],
+        "klaerungen": 0,
+        "spielerId": "@14",
+        "wurdeGeblockt": 0,
+        "ballbesitz": 0,
+        "misses": 0,
+        "tore": 0,
+        "klaerungenZeiten": []
+      }],
+      "wurdeGeblockt": 0,
+      "vorlagen": 0,
+      "blocks": 0,
+      "misses": 0,
+      "gesamtBallbesitz": 0,
+      "tore": 0,
+      "steals": 0,
+      "passe": 0,
+      "klaerungen": 0
+    }
+  },
+  "missionName": "LL Laserball 7.5 Target Earth / Crystal",
+  "tore": [],
+  "spielId": "Spieldaten"
+}
