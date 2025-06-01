@@ -411,6 +411,20 @@ public class Main {
         } catch (IOException e) {
             System.err.println("Fehler beim Archivieren: " + e.getMessage());
         }
+        
+        //Nur eine Kopie des letzten spieles im Ordner lassen
+        File dir = new File("C:\\OBSStream"); //
+        if (!dir.exists()) dir.mkdirs();
+        File lastFile = new File(dir, "latestSpieldaten.json");
+        try {
+            Files.copy(src.toPath(), lastFile.toPath());
+            System.out.println("letzte JSON-Datei im Ornder kopiert: " + lastFile.getAbsolutePath());
+            archived = true;
+        } catch (IOException e) {
+            System.err.println("Fehler beim Archivieren: " + e.getMessage());
+        }
+        
+        
     }
 
     // Hilfsklasse
