@@ -44,12 +44,25 @@ public class Main {
     private static volatile String lastJsonFilePath = null;
     private static volatile boolean archived = false;
 
+    private static volatile long lastBallbesitzUpdate = System.currentTimeMillis();
+    
     public static void main(String[] args) throws Exception {
-        // 1) Writer-Thread, der jede Sekunde JSON schreibt
         Thread writer = new Thread(() -> {
             try {
                 while (!initialized) Thread.sleep(100);
                 while (true) {
+                    long now = System.currentTimeMillis();
+                    if (currentBallHolder != null) {
+                        PlayerStats ps = playerMap.get(currentBallHolder);
+                        if (ps != null) {
+                            long diff = now - lastBallbesitzUpdate;
+                            if (diff > 0) {
+                                ps.ballbesitzMillis += diff;
+                            }
+                        }
+                    }
+                    lastBallbesitzUpdate = now;
+
                     JSONObject js = aggregateAndBuildJson(mission, playerMap, teams, goals);
                     writeJsonToFile(js);
                     Thread.sleep(1000);
@@ -63,7 +76,7 @@ public class Main {
         writer.setDaemon(true);
         writer.start();
 
-        // 2) TCP-Server für Live-Daten
+        // TCP-Server starten (dein existierender Code)
         listenTcpAndProcess(7001);
     }
 
@@ -231,10 +244,13 @@ public class Main {
                 if (neu!=null) {
                     neu.lastBallStart = timestamp;
                     STATE.put(KEY_CUR, next);
-                    currentBallHolder = next; // aktualisiere Ballhalter
+                    currentBallHolder = next; // Ballhalter aktualisieren
                 }
             }
             STATE.put(KEY_TS, timestamp);
+
+            // Live-Update Zeit für Ballbesitzberechnung
+            lastBallbesitzUpdate = timestamp;
         }
 
         // — Tor (1101) mit Vorlagen-Logik —
