@@ -8,6 +8,7 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.concurrent.*;
@@ -141,6 +142,10 @@ public class Main {
             System.out.println(">>> INITIALISIERT nach Code 9");
         }
 
+        if ("3".equals(p[0])) {
+            registerNewPlayersIfAbsent(Collections.singletonList(raw), mission.idToSynonym, mission.teamNames, playerMap);
+        }
+        
         // danach: jede 4-Event-Zeile live parsen
         if (initialized && raw.startsWith("4\t")) {
             processEventLine(raw);
@@ -190,6 +195,35 @@ public class Main {
             }
         }
     }
+    
+    private static void registerNewPlayersIfAbsent(
+            List<String> lines,
+            Map<String,String> idToSynonym,
+            Map<String,String> teamNames,
+            Map<String,PlayerStats> outMap
+    ) {
+        for (String raw : lines) {
+            String[] p = raw.split("\t", -1);
+            if ("3".equals(p[0]) && p.length >= 7 &&
+                (p[2].startsWith("@") || p[2].startsWith("#")) &&
+                "Player".equalsIgnoreCase(p[3]))
+            {
+                String id = p[2];
+                if (!outMap.containsKey(id)) { // Nur wenn noch nicht registriert
+                    String name = idToSynonym.getOrDefault(id, p[4]);
+                    String team = teamNames.getOrDefault(p[5], "Unbekannt");
+                    PlayerStats ps = new PlayerStats();
+                    ps.id = id;
+                    ps.name = name;
+                    ps.team = team;
+                    outMap.put(id, ps);
+                    teams.computeIfAbsent(team, k -> new ArrayList<>()).add(ps);
+                    System.out.println("Nachträglich Spieler registriert: " + name + " (" + id + ")");
+                }
+            }
+        }
+    }
+
 
  // ─── 2) processEventLine(...) (nur Ballwechsel, Tor- und Spielende-Logik) ─────────
     private static void processEventLine(String raw) {
@@ -472,22 +506,12 @@ public class Main {
         if (!dir.exists()) dir.mkdirs();
         File lastFile = new File(dir, "latestSpieldaten.json");
         try {
-            Files.copy(src.toPath(), lastFile.toPath());
+            Files.copy(src.toPath(), lastFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
             System.out.println("letzte JSON-Datei im Ornder kopiert: " + lastFile.getAbsolutePath());
             archived = true;
         } catch (IOException e) {
             System.err.println("Fehler beim Archivieren: " + e.getMessage());
         }
-        
-        
-    }
-
-    // Hilfsklasse
-    private static class MissionInfo {
-        boolean foundMission = false;
-        String missionId, missionName, startZeit, duration;
-        Map<String,String> idToSynonym = new HashMap<>();
-        Map<String,String> teamNames  = Map.of("0","Earth","1","Crystal","2","Fire","3","Ice");
     }
 
 }
