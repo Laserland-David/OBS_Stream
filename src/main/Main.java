@@ -26,6 +26,12 @@ public class Main {
                                 state.goals);
 
                         FileUtils.writeJsonToFile(state, js);
+                        
+                        if (!currentActive && state.lastGameActiveState) {
+                        	FileUtils.archiveCurrentJsonFile(state);//archiviere Datei - letzter Schreibbefehl
+                        	state.resetForNextSession(); //nächste Session vorbereiten
+                        }
+                        
                     }
 
                     // Merke aktuellen Spielstatus für nächsten Durchlauf

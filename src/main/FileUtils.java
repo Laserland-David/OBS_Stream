@@ -31,7 +31,6 @@ public class FileUtils {
 	        } catch (IOException e) {
 	            System.err.println("Fehler beim Archivieren: " + e.getMessage());
 	        }
-	        
 	    }
 
 		 static void copyAndReplaceLatestSpieldaten(GameState state) {
@@ -58,6 +57,7 @@ public class FileUtils {
 	            w.write(result.toString(2));
 	        }
 	        state.lastJsonFilePath = f.getAbsolutePath();
+	        state.archived = false; //wurde neu geschrieben kann also noch nicht archiviert sein
 	        System.out.println("→ JSON geschrieben nach: " + state.lastJsonFilePath);
 	        return state.lastJsonFilePath;
 	    }

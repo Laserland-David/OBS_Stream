@@ -44,6 +44,7 @@ public class GameState {
 
     public volatile boolean gameActive = false; // True, wenn Spiel läuft
     public volatile boolean lastGameActiveState = false;
+    public volatile boolean rundeAbgebrochen = false;
 
     // Zeit der letzten Ballbesitz-Aktualisierung
     public volatile long lastBallbesitzUpdate = System.currentTimeMillis();
@@ -157,7 +158,10 @@ public class GameState {
                         return x;
                     });
 
-                    teams.computeIfAbsent(team, k -> new ArrayList<>()).add(ps);
+                    List<PlayerStats> teamPlayers = teams.computeIfAbsent(team, k -> new ArrayList<>());
+                    if (!teamPlayers.contains(ps)) {
+                        teamPlayers.add(ps);
+                    }
 
                     if (onlyIfAbsent) {
                         System.out.println("Nachträglich Spieler registriert: " + name + " (" + id + ")");
@@ -166,6 +170,7 @@ public class GameState {
             }
         }
     }
+
 
     /**
      * Verarbeitet jede Event-Zeile, die mit "4\t" beginnt.
@@ -367,6 +372,8 @@ public class GameState {
 
             lastBallbesitzUpdate = now;
             gameActive = false;
+            rundeAbgebrochen = false;  // reguläres Ende
+            
         }
     }
 
@@ -387,6 +394,13 @@ public class GameState {
         out.put("duration", mi.duration);
         out.put("gameActive", gameActive);
 
+     // NEU: Spielstatus als String
+        String spielStatus = "running";
+        if (!gameActive && rundeAbgebrochen) spielStatus = "abgebrochen";
+        else if (!gameActive && !rundeAbgebrochen) spielStatus = "beendet";
+
+        out.put("spielStatus", spielStatus);
+        
         JSONObject all = new JSONObject();
         tm.forEach((team, list) -> {
             JSONObject o = new JSONObject();

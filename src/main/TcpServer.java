@@ -31,9 +31,13 @@ public class TcpServer {
                         state.handleLine(line.trim()); 
                     }
                     System.out.println("Verbindung beendet.");
-                    state.gameActive = false; //Wird eigentlich vorher shcon false gesetzt. Hier nur relevant wenn das Spiel abgebrochen wird. 
-                    FileUtils.archiveCurrentJsonFile(state);
-                    state.resetForNextSession();
+                    if (state.gameActive) {
+                        // Wenn Verbindung zu Ende, aber Spiel noch aktiv → Abbruch
+                        state.rundeAbgebrochen = true;
+                        state.gameActive = false;
+                    }
+                    //FileUtils.archiveCurrentJsonFile(state);
+                    //state.resetForNextSession();
                 } catch (IOException e) {
                     System.err.println("Fehler bei Verbindung: " + e.getMessage());
                 }
